@@ -10,6 +10,7 @@ interface DharmaSmartWalletImplementationV0Interface {
 
   // DAI + USDC are the only assets initially supported (include ETH for later).
   enum AssetType {
+    SAI,
     DAI,
     USDC,
     ETH
