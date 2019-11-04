@@ -63,6 +63,7 @@ interface DharmaSmartWalletImplementationV0Interface {
 
   // Note: function selector same as V0/V1 but returns two additional arguments.
   function getBalances() external returns (
+    uint256 saiBalance,
     uint256 daiBalance,
     uint256 usdcBalance,
     uint256 etherBalance,

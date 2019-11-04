@@ -6,7 +6,7 @@ interface ScdMcdMigrationInterface {
       uint wad
     ) external;
 
-    function swapSaiToDAi(
+    function swapDaiToSai(
       uint wad
     ) external;
 

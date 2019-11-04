@@ -14,12 +14,15 @@ import "../../../interfaces/USDCV1Interface.sol";
 import "../../../interfaces/ComptrollerInterface.sol";
 import "../../../interfaces/DharmaKeyRegistryInterface.sol";
 import "../../../interfaces/ScdMcdMigrationInterface.sol";
+import "../../../interfaces/DharmaMcdRegistryInterface.sol";
 import "../../../interfaces/ERC1271.sol";
 
 // TODO: Adjust AssetType enum to include DAI and SAI - done
 // TODO: Switch existing instances of AssetType.DAI to SAI - done
-// TODO: Modify constant iface declarations from cDai to cSai
-// TODO: sai to dai conversion function
+// TODO: Modify constant iface declarations from cDai to cSai - done
+// TODO: Create Dai/Sai registry and interface - done
+// TODO: 
+// TODO: Implement sai to dai conversion function
 // TODO: optionally convert sai to dai in `repayAndDeposit`
 
 
@@ -116,6 +119,19 @@ contract DharmaSmartWalletImplementationV4 is
     0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B // mainnet
   );
 
+  // TODO: ScdMcdMigration contract address, pending deployment
+  // Temp as Comptroller
+
+  ScdMcdMigrationInterface internal constant _SCD_MCD_MIGRATION = ScdMcdMigrationInterface(
+    0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B
+  );
+
+  // TODO: McdRegistry contract address, pending deployment/tests
+  // Temp as Comptroller
+  DharmaDaiTypeRegistryInterface internal constant _DAI_TYPE_REGISTRY = DharmaDaiTypeRegistryInterface(
+    0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B // TBD
+  );
+
   // Compound returns a value of 0 to indicate success, or lack of an error.
   uint256 internal constant _COMPOUND_SUCCESS = 0;
 
@@ -128,7 +144,7 @@ contract DharmaSmartWalletImplementationV4 is
 
   /**
    * @notice In initializer, set up user signing key, set approval on the cDAI
-   * and cUSDC contracts, and deposit any Dai or USDC already at the address to
+   * and cUSDC contracts, and deposit any Sai or USDC already at the address to
    * Compound. Note that this initializer is only callable while the smart
    * wallet instance is still in the contract creation phase.
    * @param userSigningKey address The initial user signing key for the smart
@@ -144,10 +160,13 @@ contract DharmaSmartWalletImplementationV4 is
     // Approve the cDAI contract to transfer Dai on behalf of this contract.
     if (_setFullApproval(AssetType.SAI)) {
       // Get the current Dai balance on this contract.
-      uint256 daiBalance = _SAI.balanceOf(address(this));
+      uint256 saiBalance = _SAI.balanceOf(address(this));
+
+      // Swap sai for dai on MCD migration contract.
+      _swapSaiToDai(saiBalance);
 
       // Try to deposit any dai balance on Compound.
-      _depositOnCompound(AssetType.SAI, daiBalance);
+      _depositOnCompound(AssetType.SAI, saiBalance);
     }
 
     // Approve the cUSDC contract to transfer USDC on behalf of this contract.
@@ -157,6 +176,18 @@ contract DharmaSmartWalletImplementationV4 is
 
       // Try to deposit any USDC balance on Compound.
       _depositOnCompound(AssetType.USDC, usdcBalance);
+    }
+  }
+
+  function _swapSaiToDai(uint256 saiBalance) internal {
+    // Make sure this address is registered to use MCD instead of SCD
+    (ok, ) = address(_DAI_TYPE_REGISTRY).call(abi.encodeWithSelector(
+      _MCD_REGISTRY.setAssetTypeDai.selector, address(this)
+    ));
+
+    if (!ok) {
+      emit ExternalError(address(_DAI_TYPE_REGISTRY), 
+      "Dai Type Registry reverted when setting the asset type to DAI.");
     }
   }
 
@@ -635,6 +666,7 @@ contract DharmaSmartWalletImplementationV4 is
    * the cDAI balance, and the underlying USDC balance of the cUSDC balance.
    */
   function getBalances() external returns (
+    uint256 saiBalance,
     uint256 daiBalance,
     uint256 usdcBalance,
     uint256 etherBalance, // always returns 0
@@ -642,7 +674,8 @@ contract DharmaSmartWalletImplementationV4 is
     uint256 cUsdcUnderlyingUsdcBalance,
     uint256 cEtherUnderlyingEtherBalance // always returns 0
   ) {
-    daiBalance = _SAI.balanceOf(address(this));
+    saiBalance = _SAI.balanceOf(address(this));
+    daiBalance = _DAI.balanceOf(address(this));
     usdcBalance = _USDC.balanceOf(address(this));
     cDaiUnderlyingDaiBalance = _CSAI.balanceOfUnderlying(address(this));
     cUsdcUnderlyingUsdcBalance = _CUSDC.balanceOfUnderlying(address(this));
@@ -959,6 +992,9 @@ contract DharmaSmartWalletImplementationV4 is
     if (asset == AssetType.SAI) {
       token = address(_SAI);
       cToken = address(_CSAI);
+    } else if (asset == AssetType.DAI) {
+      token = address(_DAI);
+      cToken = address(_CDAI);
     } else {
       token = address(_USDC);
       cToken = address(_CUSDC);
@@ -973,7 +1009,9 @@ contract DharmaSmartWalletImplementationV4 is
     // Emit a corresponding event if the approval failed.
     if (!ok) {
       if (asset == AssetType.SAI) {
-        emit ExternalError(address(_SAI), "DAI contract reverted on approval.");
+        emit ExternalError(address(_SAI), "SAI contract reverted on approval.");
+      } else if (asset == AssetType.DAI) {
+          emit ExternalError(address(_DAI), "DAI contract reverted on approval.")
       } else {
         // Find out why USDC transfer reverted (it doesn't give revert reasons).
         _diagnoseAndEmitUSDCSpecificError(_USDC.approve.selector);
@@ -1301,6 +1339,28 @@ contract DharmaSmartWalletImplementationV4 is
         );
       }
     }
+  }
+
+  function _diagnoseAndEmitScdMcdMigrationSpecificError(bytes4 functionSelector) internal {
+    // Determine the name of the function that was called on ScdMcdMigration
+    string memory functionName;
+    if (functionSelector == _SCD_MCD_MIGRATION.swapSaiToDai.selector) {
+      functionName = "swapSaiToDai";
+    } else if (functionSelector == _SCD_MCD_MIGRATION.swapDaiToSai.selector) {
+      functionName = "swapDaiToSai";
+    } else {
+      functionName = "migrate";
+    }
+
+    // TODO: Figure out cases where migration contract can revert and try to extract that info
+    emit ExternalError(
+      address(_SCD_MCD_MIGRATION),
+      string(
+        abi.encodePacked(
+          "MCD_SCD_MIGRATION contract reverted on ", functionName, "."
+        )
+      )
+    )
   }
 
   /**
